@@ -1,0 +1,398 @@
+{% extends 'base.html' %}
+
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4"><i class="bi bi-speedometer2"></i> Admin Dashboard</h2>
+        
+        <!-- Standalone Requests Section -->
+        <div class="card shadow mb-4">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0"><i class="bi bi-person"></i> Standalone Question Requests</h5>
+            </div>
+            <div class="card-body">
+                {% if standalone_requests %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>User Name</th>
+                                <th>Question Type</th>
+                                <th>Current Question</th>
+                                <th>Source</th>
+                                <th>Last Updated</th>
+                                <th>Status & Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for req in standalone_requests %}
+                            <tr>
+                                <td><strong>{{ req.user_name }}</strong></td>
+                                <td>
+                                    {% if req.question_type == 'truth' %}
+                                        <span class="badge bg-success">Truth</span>
+                                    {% elif req.question_type == 'dare' %}
+                                        <span class="badge bg-danger">Dare</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if req.current_question %}
+                                        {{ req.current_question|truncatechars:50 }}
+                                    {% else %}
+                                        <span class="text-muted">Waiting for question...</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if req.question_source == 'ADMIN' %}
+                                        <span class="badge bg-warning">Admin</span>
+                                    {% elif req.question_source == 'API' %}
+                                        <span class="badge bg-primary">API</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ req.updated_at|timesince }} ago</td>
+                                <td>
+                                    {% if req.status == 'PENDING' %}
+                                        <span class="badge bg-warning mb-2">PENDING</span><br>
+                                        <button class="btn btn-sm btn-success me-1" onclick="sendApiQuestion('{{ req.session_id }}', '{{ req.user_name }}')">
+                                            <i class="bi bi-cloud-download"></i> Send API Question
+                                        </button>
+                                        <button class="btn btn-sm btn-primary" onclick="openStandaloneInjectModal('{{ req.session_id }}', '{{ req.user_name }}')">
+                                            <i class="bi bi-pencil"></i> Send Custom Question
+                                        </button>
+                                    {% else %}
+                                        <span class="badge bg-success">{{ req.status }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted">No active standalone requests.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Active Rooms Section -->
+        <div class="card shadow">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0">Active Game Rooms</h5>
+            </div>
+            <div class="card-body">
+                {% if rooms %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Room Code</th>
+                                <th>Players</th>
+                                <th>Round</th>
+                                <th>Current Player</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for room in rooms %}
+                            <tr>
+                                <td><strong>{{ room.code }}</strong></td>
+                                <td>
+                                    {% for player in room.get_players %}
+                                        <span class="badge bg-secondary">{{ player.name }}</span>
+                                    {% endfor %}
+                                </td>
+                                <td>
+                                    {% if room.get_current_game_state %}
+                                        {{ room.get_current_game_state.round_number }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if room.get_current_game_state and room.get_current_game_state.current_turn_player %}
+                                        {{ room.get_current_game_state.current_turn_player.name }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if room.is_full %}
+                                        <span class="badge bg-success">Active</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">Waiting</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if room.is_full %}
+                                    <button class="btn btn-sm btn-primary" onclick="openInjectModal('{{ room.code }}')">
+                                        <i class="bi bi-send-plus"></i> Inject Question
+                                    </button>
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted">No active rooms.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Inject Question Modal (for game rooms) -->
+<div class="modal fade" id="injectQuestionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Inject Question to Game Room</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="injectQuestionForm">
+                    <input type="hidden" id="injectRoomCode" value="">
+                    <div class="mb-3">
+                        <label for="questionType" class="form-label">Question Type</label>
+                        <select class="form-select" id="questionType" required>
+                            <option value="truth">Truth</option>
+                            <option value="dare">Dare</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="questionText" class="form-label">Question Text</label>
+                        <textarea class="form-control" id="questionText" rows="4" required placeholder="Enter your custom question..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="injectQuestion()">Inject Question</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Inject Question Modal (for standalone requests) -->
+<div class="modal fade" id="injectStandaloneModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-info text-white">
+                <h5 class="modal-title">Inject Question to <span id="standaloneUserName"></span></h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="injectStandaloneForm">
+                    <input type="hidden" id="injectSessionId" value="">
+                    <div class="mb-3">
+                        <label for="standaloneQuestionType" class="form-label">Question Type</label>
+                        <select class="form-select" id="standaloneQuestionType" required>
+                            <option value="truth">Truth</option>
+                            <option value="dare">Dare</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="standaloneQuestionText" class="form-label">Question Text</label>
+                        <textarea class="form-control" id="standaloneQuestionText" rows="4" required placeholder="Enter your custom question..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="injectStandaloneQuestion()">Inject Question</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="errorAlert" class="alert alert-danger alert-dismissible fade show d-none mt-3" role="alert">
+    <span id="errorMessage"></span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+
+<div id="successAlert" class="alert alert-success alert-dismissible fade show d-none mt-3" role="alert">
+    <span id="successMessage"></span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function openInjectModal(roomCode) {
+    document.getElementById('injectRoomCode').value = roomCode;
+    const modal = new bootstrap.Modal(document.getElementById('injectQuestionModal'));
+    modal.show();
+}
+
+function sendApiQuestion(sessionId, userName) {
+    if (!confirm(`Send API question to ${userName}?`)) {
+        return;
+    }
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch(`/api/admin/standalone/${sessionId}/send-api/`, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': csrfToken,
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            showSuccess(`API question sent successfully to ${userName}!`);
+            // Refresh page after 1 second
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        }
+    })
+    .catch(error => {
+        showError('Failed to send API question. Please try again.');
+    });
+}
+
+function openStandaloneInjectModal(sessionId, userName) {
+    document.getElementById('injectSessionId').value = sessionId;
+    document.getElementById('standaloneUserName').textContent = userName;
+    document.getElementById('standaloneQuestionText').value = '';
+    const modal = new bootstrap.Modal(document.getElementById('injectStandaloneModal'));
+    modal.show();
+}
+
+function injectStandaloneQuestion() {
+    const sessionId = document.getElementById('injectSessionId').value;
+    const questionType = document.getElementById('standaloneQuestionType').value;
+    const questionText = document.getElementById('standaloneQuestionText').value.trim();
+    
+    if (!questionText) {
+        showError('Please enter a question');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('question_type', questionType);
+    formData.append('question_text', questionText);
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch(`/api/admin/standalone/${sessionId}/inject/`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            showSuccess('Question injected successfully to standalone user!');
+            document.getElementById('standaloneQuestionText').value = '';
+            const modal = bootstrap.Modal.getInstance(document.getElementById('injectStandaloneModal'));
+            modal.hide();
+            // Refresh page after 1 second
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        }
+    })
+    .catch(error => {
+        showError('Failed to inject question. Please try again.');
+    });
+}
+
+function injectQuestion() {
+    const roomCode = document.getElementById('injectRoomCode').value;
+    const questionType = document.getElementById('questionType').value;
+    const questionText = document.getElementById('questionText').value.trim();
+    
+    if (!questionText) {
+        showError('Please enter a question');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('question_type', questionType);
+    formData.append('question_text', questionText);
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch(`/api/admin/room/${roomCode}/inject-question/`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            showSuccess('Question injected successfully!');
+            document.getElementById('questionText').value = '';
+            const modal = bootstrap.Modal.getInstance(document.getElementById('injectQuestionModal'));
+            modal.hide();
+            // Refresh page after 1 second
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        }
+    })
+    .catch(error => {
+        showError('Failed to inject question. Please try again.');
+    });
+}
+
+function showError(message) {
+    const errorAlert = document.getElementById('errorAlert');
+    const errorMessage = document.getElementById('errorMessage');
+    errorMessage.textContent = message;
+    errorAlert.classList.remove('d-none');
+    setTimeout(() => {
+        errorAlert.classList.add('d-none');
+    }, 5000);
+}
+
+function showSuccess(message) {
+    const successAlert = document.getElementById('successAlert');
+    const successMessage = document.getElementById('successMessage');
+    successMessage.textContent = message;
+    successAlert.classList.remove('d-none');
+    setTimeout(() => {
+        successAlert.classList.add('d-none');
+    }, 5000);
+}
+
+</script>
+{% endblock %}

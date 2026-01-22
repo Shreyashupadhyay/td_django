@@ -1,0 +1,288 @@
+{% extends 'base.html' %}
+
+{% block title %}Get Truth or Dare Question{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white text-center">
+                <h3 class="mb-0"><i class="bi bi-stars"></i> Get a Truth or Dare Question</h3>
+            </div>
+            <div class="card-body p-5">
+                <!-- Name Input Section -->
+                <div id="nameSection">
+                    <h5 class="text-center mb-4">What's your name?</h5>
+                    <div class="mb-3">
+                        <input type="text" class="form-control form-control-lg" id="userName" placeholder="Enter your name..." required>
+                    </div>
+                    <div class="text-center">
+                        <button class="btn btn-primary btn-lg w-100" onclick="submitName()">
+                            <i class="bi bi-arrow-right-circle"></i> Continue
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Choice Section -->
+                <div id="choiceSection" class="d-none">
+                    <h5 class="text-center mb-3">Hello, <span id="displayName" class="text-primary"></span>!</h5>
+                    <h5 class="text-center mb-4">Choose what you want:</h5>
+                    <div class="d-grid gap-3">
+                        <button class="btn btn-success btn-lg" onclick="requestQuestion('truth')">
+                            <i class="bi bi-heart-fill"></i> Truth
+                        </button>
+                        <button class="btn btn-danger btn-lg" onclick="requestQuestion('dare')">
+                            <i class="bi bi-lightning-fill"></i> Dare
+                        </button>
+                    </div>
+                    <div class="text-center mt-3">
+                        <button class="btn btn-outline-secondary" onclick="resetPage()">
+                            <i class="bi bi-arrow-left"></i> Change Name
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Question Display Section -->
+                <div id="questionSection" class="d-none">
+                    <div class="card border-warning mb-3">
+                        <div class="card-header bg-warning">
+                            <h5 class="mb-0">
+                                <i class="bi bi-question-circle"></i> 
+                                Your <span id="questionType"></span> Question
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="fs-5" id="questionText"></p>
+                        </div>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-primary btn-lg" onclick="showChoices()">
+                            <i class="bi bi-arrow-repeat"></i> Get Another Question
+                        </button>
+                        <button class="btn btn-outline-secondary" onclick="resetPage()">
+                            <i class="bi bi-house"></i> Start Over
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Loading Section -->
+                <div id="loadingSection" class="text-center d-none">
+                    <div class="spinner-border text-primary mb-3" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <h5 class="text-primary">Waiting, your question is getting fetched</h5>
+                    <div class="alert alert-info mt-3">
+                        <i class="bi bi-info-circle"></i> You requested a <strong><span id="requestedType"></span></strong> question
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-center mt-4">
+            <a href="{% url 'home' %}" class="btn btn-outline-primary">
+                <i class="bi bi-controller"></i> Go to Game Mode
+            </a>
+        </div>
+    </div>
+</div>
+
+<div id="errorAlert" class="alert alert-danger alert-dismissible fade show d-none mt-3" role="alert">
+    <span id="errorMessage"></span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let sessionId = null;
+let userName = null;
+let socket = null;
+let pollInterval = null;
+
+function submitName() {
+    const nameInput = document.getElementById('userName').value.trim();
+    if (!nameInput) {
+        showError('Please enter your name');
+        return;
+    }
+    
+    userName = nameInput;
+    document.getElementById('displayName').textContent = userName;
+    
+    // Show choice section
+    document.getElementById('nameSection').classList.add('d-none');
+    document.getElementById('choiceSection').classList.remove('d-none');
+}
+
+function showChoices() {
+    document.getElementById('questionSection').classList.add('d-none');
+    document.getElementById('choiceSection').classList.remove('d-none');
+}
+
+function requestQuestion(type) {
+    if (!userName) {
+        showError('Please enter your name first');
+        return;
+    }
+    
+    // Show loading/waiting
+    document.getElementById('choiceSection').classList.add('d-none');
+    document.getElementById('loadingSection').classList.remove('d-none');
+    document.getElementById('requestedType').textContent = type.charAt(0).toUpperCase() + type.slice(1);
+    
+    const formData = new FormData();
+    formData.append('user_name', userName);
+    formData.append('question_type', type);
+    if (sessionId) {
+        formData.append('session_id', sessionId);
+    }
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch('/api/standalone/request/', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+            document.getElementById('loadingSection').classList.add('d-none');
+            document.getElementById('choiceSection').classList.remove('d-none');
+        } else {
+            sessionId = data.session_id;
+            
+            // Connect to WebSocket for real-time updates
+            connectWebSocket();
+            
+            // Start polling for admin approval
+            startPolling();
+        }
+    })
+    .catch(error => {
+        console.error('Error requesting question:', error);
+        showError('Failed to submit request. Please try again.');
+        document.getElementById('loadingSection').classList.add('d-none');
+        document.getElementById('choiceSection').classList.remove('d-none');
+    });
+}
+
+function startPolling() {
+    // Poll every 2 seconds to check if admin approved
+    if (pollInterval) {
+        clearInterval(pollInterval);
+    }
+    
+    pollInterval = setInterval(() => {
+        checkStatus();
+    }, 2000);
+}
+
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
+
+function checkStatus() {
+    if (!sessionId) return;
+    
+    fetch(`/api/standalone/${sessionId}/status/`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'APPROVED' && data.current_question) {
+                // Admin approved and sent question
+                stopPolling();
+                showQuestion(data.current_question, data.question_type, data.question_source);
+            }
+        })
+        .catch(error => {
+            console.error('Error checking status:', error);
+        });
+}
+
+function showQuestion(text, type, source) {
+    document.getElementById('loadingSection').classList.add('d-none');
+    document.getElementById('questionText').textContent = text;
+    document.getElementById('questionType').textContent = type.charAt(0).toUpperCase() + type.slice(1);
+    document.getElementById('questionSection').classList.remove('d-none');
+}
+
+function resetPage() {
+    sessionId = null;
+    userName = null;
+    stopPolling();
+    document.getElementById('userName').value = '';
+    document.getElementById('nameSection').classList.remove('d-none');
+    document.getElementById('choiceSection').classList.add('d-none');
+    document.getElementById('questionSection').classList.add('d-none');
+    document.getElementById('loadingSection').classList.add('d-none');
+    
+    // Disconnect WebSocket
+    if (socket) {
+        socket.close();
+        socket = null;
+    }
+}
+
+function connectWebSocket() {
+    if (!sessionId || socket) return;
+    
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/standalone/${sessionId}/`;
+    
+    try {
+        socket = new WebSocket(wsUrl);
+        
+        socket.onopen = function() {
+            console.log('WebSocket connected for standalone session');
+        };
+        
+        socket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.type === 'admin_question_injected') {
+                // Admin sent a question
+                stopPolling();
+                showQuestion(data.question.text, data.question.type, data.question.source);
+                showMessage('Admin sent you a question!', 'success');
+            }
+        };
+        
+        socket.onerror = function(error) {
+            console.log('WebSocket not available (this is OK)');
+        };
+        
+        socket.onclose = function() {
+            console.log('WebSocket disconnected');
+        };
+    } catch (error) {
+        console.log('WebSocket not supported, skipping');
+    }
+}
+
+function showError(message) {
+    const errorAlert = document.getElementById('errorAlert');
+    const errorMessage = document.getElementById('errorMessage');
+    errorMessage.textContent = message;
+    errorAlert.classList.remove('d-none');
+    setTimeout(() => {
+        errorAlert.classList.add('d-none');
+    }, 5000);
+}
+
+function showMessage(message, type) {
+    // Simple alert for now
+    alert(message);
+}
+</script>
+{% endblock %}

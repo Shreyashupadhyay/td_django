@@ -1,0 +1,505 @@
+{% extends 'base.html' %}
+
+{% block title %}Game - {{ room.code }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                <h4 class="mb-0"><i class="bi bi-controller"></i> Game Room: {{ room.code }}</h4>
+                <span class="badge bg-light text-dark">Round {{ game_state.round_number|default:1 }}</span>
+            </div>
+            <div class="card-body">
+                <!-- Current Turn Indicator -->
+                <div id="turnIndicator" class="alert alert-info mb-4">
+                    <i class="bi bi-clock-history"></i> 
+                    <span id="turnMessage">Waiting for game to start...</span>
+                </div>
+                
+                <!-- Start Game Button (if game hasn't started but room is full) -->
+                {% if needs_start %}
+                <div class="alert alert-warning mb-4 text-center">
+                    <h5><i class="bi bi-exclamation-triangle"></i> Game Not Started</h5>
+                    <p>Both players have joined. Click the button below to start the game!</p>
+                    <button class="btn btn-success btn-lg" onclick="startGame()">
+                        <i class="bi bi-play-circle"></i> Start Game
+                    </button>
+                </div>
+                {% endif %}
+                
+                <!-- Players Info -->
+                <div class="row mb-4">
+                    {% for p in room.get_players %}
+                    <div class="col-md-6">
+                        <div class="card {% if p == player %}border-primary{% endif %}">
+                            <div class="card-body text-center">
+                                <h5>
+                                    <i class="bi bi-person-circle"></i> {{ p.name }}
+                                    {% if p == player %}<span class="badge bg-primary">You</span>{% endif %}
+                                </h5>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                <!-- Truth/Dare Choice (only for current player) -->
+                <div id="choiceSection" class="text-center mb-4 d-none">
+                    <h5 class="mb-3">Choose:</h5>
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                        <button class="btn btn-success btn-lg" onclick="chooseTruthDare('truth')">
+                            <i class="bi bi-heart"></i> Truth
+                        </button>
+                        <button class="btn btn-danger btn-lg" onclick="chooseTruthDare('dare')">
+                            <i class="bi bi-lightning"></i> Dare
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Question Display -->
+                <div id="questionSection" class="mb-4 d-none">
+                    <div class="card border-warning">
+                        <div class="card-header bg-warning">
+                            <h5 class="mb-0">
+                                <i class="bi bi-question-circle"></i> 
+                                <span id="questionType"></span> Question
+                                <span id="questionSource" class="badge bg-secondary ms-2"></span>
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="fs-5" id="questionText"></p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Answer Input (only for current player) -->
+                <div id="answerSection" class="mb-4 d-none">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="mb-3">Your Answer:</h5>
+                            <textarea class="form-control mb-3" id="answerText" rows="4" placeholder="Type your answer here..."></textarea>
+                            <button class="btn btn-primary btn-lg w-100" onclick="submitAnswer()">
+                                <i class="bi bi-send"></i> Submit Answer
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Answer Display (visible to both players after submission) -->
+                <div id="answerDisplaySection" class="mb-4 d-none">
+                    <div class="card border-success">
+                        <div class="card-header bg-success text-white">
+                            <h5 class="mb-0">
+                                <i class="bi bi-check-circle"></i> 
+                                Answer from <span id="answerPlayerName"></span>
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="fs-5" id="answerText-display"></p>
+                        </div>
+                    </div>
+                    <div class="text-center mt-3">
+                        <button class="btn btn-primary btn-lg" onclick="nextRound()">
+                            <i class="bi bi-arrow-right-circle"></i> Next Round
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Waiting for Opponent -->
+                <div id="waitingSection" class="text-center mb-4 d-none">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2">Waiting for opponent...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="errorAlert" class="alert alert-danger alert-dismissible fade show d-none mt-3" role="alert">
+    <span id="errorMessage"></span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const roomCode = '{{ room.code }}';
+const playerId = {{ player.id }};
+let socket = null;
+let currentGameState = null;
+let wsConnected = false;
+
+function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/room/${roomCode}/`;
+    
+    try {
+        socket = new WebSocket(wsUrl);
+        
+    socket.onopen = function() {
+        console.log('WebSocket connected');
+        wsConnected = true;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: 'get_state'
+            }));
+        }
+    };
+        
+        socket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+        };
+        
+        socket.onerror = function(error) {
+            console.log('WebSocket not available (using polling fallback)');
+            wsConnected = false;
+            // Don't spam reconnect attempts
+        };
+        
+        socket.onclose = function() {
+            console.log('WebSocket disconnected');
+            wsConnected = false;
+            // Only try to reconnect if it was previously connected
+            if (socket && socket.readyState === WebSocket.CLOSED) {
+                // Don't auto-reconnect, rely on polling instead
+            }
+        };
+    } catch (error) {
+        console.log('WebSocket not supported, using polling fallback');
+        wsConnected = false;
+    }
+}
+
+function handleWebSocketMessage(data) {
+    if (data.type === 'room_state') {
+        currentGameState = data.game_state;
+        updateUI(data);
+    } else if (data.type === 'question_sent') {
+        showQuestion(data.question);
+    } else if (data.type === 'answer_submitted') {
+        if (data.next_turn) {
+            showMessage(`Turn switched to ${data.next_turn}`);
+        }
+        // Update via polling instead of WebSocket
+        setTimeout(() => {
+            checkGameState();
+        }, 500);
+    } else if (data.type === 'admin_question_injected') {
+        showQuestion(data.question);
+        showMessage('Admin injected a question!', 'warning');
+    }
+}
+
+function checkGameState() {
+    // Poll game state via API (fallback when WebSocket doesn't work)
+    fetch(`/api/room/${roomCode}/status/`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.game_started) {
+                // Build a room_state-like object for updateUI
+                const roomStateData = {
+                    type: 'room_state',
+                    room: {
+                        code: data.room_code,
+                        is_active: data.is_active,
+                        is_full: data.is_full
+                    },
+                    players: data.players,
+                    game_state: {
+                        round_number: data.round_number,
+                        current_turn_player_id: data.current_turn_player_id,
+                        current_turn_player_name: data.current_turn_player,
+                        current_choice: null,
+                        is_waiting_for_question: data.is_waiting_for_question,
+                        is_waiting_for_answer: data.is_waiting_for_answer
+                    },
+                    current_question: data.current_question,
+                    current_answer: data.current_answer
+                };
+                updateUI(roomStateData);
+            }
+        })
+        .catch(error => {
+            console.error('Error checking game state:', error);
+        });
+}
+
+function updateUI(data) {
+    const gameState = data.game_state;
+    const currentQuestion = data.current_question;
+    const isMyTurn = gameState && gameState.current_turn_player_id === playerId;
+    
+    // Hide start game button if it exists
+    const startGameAlert = document.querySelector('.alert-warning');
+    if (startGameAlert) {
+        startGameAlert.classList.add('d-none');
+    }
+    
+    // Update turn indicator
+    if (gameState) {
+        const turnMessage = document.getElementById('turnMessage');
+        if (isMyTurn) {
+            turnMessage.textContent = `It's YOUR turn!`;
+            document.getElementById('turnIndicator').className = 'alert alert-success mb-4';
+        } else if (gameState.current_turn_player_name) {
+            turnMessage.textContent = `It's ${gameState.current_turn_player_name}'s turn`;
+            document.getElementById('turnIndicator').className = 'alert alert-info mb-4';
+        } else {
+            turnMessage.textContent = 'Game started!';
+            document.getElementById('turnIndicator').className = 'alert alert-success mb-4';
+        }
+    }
+    
+    // Show/hide sections based on state
+    document.getElementById('choiceSection').classList.add('d-none');
+    document.getElementById('questionSection').classList.add('d-none');
+    document.getElementById('answerSection').classList.add('d-none');
+    document.getElementById('answerDisplaySection').classList.add('d-none');
+    document.getElementById('waitingSection').classList.add('d-none');
+    
+    // Check if there's a current answer to display
+    const currentAnswer = data.current_answer || null;
+    
+    if (!gameState) {
+        document.getElementById('waitingSection').classList.remove('d-none');
+    } else if (currentAnswer && currentQuestion && currentQuestion.is_answered) {
+        // Answer has been submitted - show it to both players with next round button
+        showQuestion(currentQuestion);
+        showAnswer(currentAnswer);
+    } else if (isMyTurn) {
+        if (!gameState.is_waiting_for_question && !gameState.is_waiting_for_answer && !currentQuestion) {
+            // Show choice buttons - it's my turn and no question yet
+            document.getElementById('choiceSection').classList.remove('d-none');
+        } else if (currentQuestion && !currentQuestion.is_answered) {
+            // Show question and answer input
+            showQuestion(currentQuestion);
+            document.getElementById('answerSection').classList.remove('d-none');
+        } else if (gameState.is_waiting_for_question) {
+            // Waiting for question to be fetched
+            document.getElementById('waitingSection').classList.remove('d-none');
+        }
+    } else {
+        // Not my turn
+        if (currentQuestion && !currentQuestion.is_answered) {
+            showQuestion(currentQuestion);
+            document.getElementById('waitingSection').classList.remove('d-none');
+        } else if (gameState.is_waiting_for_question) {
+            document.getElementById('waitingSection').classList.remove('d-none');
+        } else {
+            // Just waiting for opponent's turn
+            document.getElementById('waitingSection').classList.remove('d-none');
+        }
+    }
+}
+
+function showQuestion(question) {
+    document.getElementById('questionText').textContent = question.text;
+    document.getElementById('questionType').textContent = question.type.charAt(0).toUpperCase() + question.type.slice(1);
+    document.getElementById('questionSource').textContent = question.source === 'ADMIN' ? 'Admin' : 'API';
+    document.getElementById('questionSection').classList.remove('d-none');
+}
+
+function showAnswer(answer) {
+    document.getElementById('answerText-display').textContent = answer.text;
+    document.getElementById('answerPlayerName').textContent = answer.player_name;
+    document.getElementById('answerDisplaySection').classList.remove('d-none');
+}
+
+function nextRound() {
+    fetch(`/api/room/${roomCode}/next-round/`, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': getCSRFToken(),
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            // Reload to show next turn
+            window.location.reload();
+        }
+    })
+    .catch(error => {
+        console.error('Error moving to next round:', error);
+        showError('Failed to move to next round. Please try again.');
+    });
+}
+
+function chooseTruthDare(choice) {
+    const formData = new FormData();
+    formData.append('player_id', playerId);
+    formData.append('choice', choice);
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch(`/api/room/${roomCode}/choose/`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            // Update UI via polling instead of WebSocket
+            setTimeout(() => {
+                checkGameState();
+                // Reload to show the question
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            }, 500);
+        }
+    })
+    .catch(error => {
+        console.error('Error choosing truth/dare:', error);
+        showError('Failed to submit choice. Please try again.');
+    });
+}
+
+function submitAnswer() {
+    const answerText = document.getElementById('answerText').value.trim();
+    if (!answerText) {
+        showError('Please enter an answer');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('player_id', playerId);
+    formData.append('answer_text', answerText);
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch(`/api/room/${roomCode}/answer/`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            document.getElementById('answerText').value = '';
+            // Reload immediately to show the answer
+            window.location.reload();
+        }
+    })
+    .catch(error => {
+        console.error('Error submitting answer:', error);
+        showError('Failed to submit answer. Please try again.');
+    });
+}
+
+function startGame() {
+    fetch(`/api/room/${roomCode}/start-game/`, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': getCSRFToken(),
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ player_id: playerId }),
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            // Reload page to show game
+            window.location.reload();
+        }
+    })
+    .catch(error => {
+        console.error('Error starting game:', error);
+        showError('Failed to start game. Please try again.');
+    });
+}
+
+function showError(message) {
+    const errorAlert = document.getElementById('errorAlert');
+    const errorMessage = document.getElementById('errorMessage');
+    errorMessage.textContent = message;
+    errorAlert.classList.remove('d-none');
+}
+
+function showMessage(message, type = 'info') {
+    // You can implement a toast notification here
+    console.log(message);
+}
+
+
+// Initialize UI on page load
+{% if game_state %}
+// Game has started, show initial state
+const initialData = {
+    type: 'room_state',
+    room: {
+        code: '{{ room.code }}',
+        is_active: {{ room.is_active|yesno:"true,false" }},
+        is_full: {{ room.is_full|yesno:"true,false" }}
+    },
+    players: [
+        {% for p in room.get_players %}
+        {id: {{ p.id }}, name: '{{ p.name }}', join_order: {{ p.join_order }}},
+        {% endfor %}
+    ],
+    game_state: {
+        round_number: {{ game_state.round_number|default:1 }},
+        current_turn_player_id: {{ game_state.current_turn_player.id|default:"null" }},
+        current_turn_player_name: '{{ game_state.current_turn_player.name|default:"" }}',
+        current_choice: {% if game_state.current_choice %}'{{ game_state.current_choice }}'{% else %}null{% endif %},
+        is_waiting_for_question: {{ game_state.is_waiting_for_question|yesno:"true,false" }},
+        is_waiting_for_answer: {{ game_state.is_waiting_for_answer|yesno:"true,false" }}
+    },
+    current_question: {% if current_question %}{id: {{ current_question.id }}, text: '{{ current_question.text|escapejs }}', type: '{{ current_question.question_type }}', source: '{{ current_question.source }}', is_answered: {{ current_question.is_answered|yesno:"true,false" }}}{% else %}null{% endif %},
+    current_answer: null
+};
+updateUI(initialData);
+{% endif %}
+
+// Check if game needs to be started
+{% if needs_start %}
+// Poll to check if game should start
+setInterval(() => {
+    fetch(`/api/room/${roomCode}/status/`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.game_started) {
+                window.location.reload();
+            }
+        })
+        .catch(error => console.error('Error checking status:', error));
+}, 2000);
+{% else %}
+// Poll game state every 3 seconds as fallback (when WebSocket fails)
+setInterval(checkGameState, 3000);
+{% endif %}
+
+// Connect WebSocket on page load
+connectWebSocket();
+</script>
+{% endblock %}

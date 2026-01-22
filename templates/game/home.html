@@ -1,0 +1,176 @@
+{% extends 'base.html' %}
+
+{% block title %}Truth & Dare - Home{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card shadow">
+            <div class="card-body text-center p-5">
+                <h1 class="card-title mb-4">
+                    <i class="bi bi-stars text-primary"></i> Truth & Dare
+                </h1>
+                <p class="lead mb-4">Challenge your friends with Truth & Dare!</p>
+                
+                <div class="d-grid gap-3">
+                    <button class="btn btn-primary btn-lg" data-bs-toggle="modal" data-bs-target="#startGameModal">
+                        <i class="bi bi-play-circle"></i> Start Game
+                    </button>
+                    <button class="btn btn-outline-primary btn-lg" data-bs-toggle="modal" data-bs-target="#joinGameModal">
+                        <i class="bi bi-door-open"></i> Join Game
+                    </button>
+                    <a href="{% url 'standalone_page' %}" class="btn btn-success btn-lg">
+                        <i class="bi bi-person"></i> Get Single Question
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Start Game Modal -->
+<div class="modal fade" id="startGameModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Start New Game</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="startGameForm">
+                    <div class="mb-3">
+                        <label for="playerNameStart" class="form-label">Your Name</label>
+                        <input type="text" class="form-control" id="playerNameStart" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="startGame()">Start</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Join Game Modal -->
+<div class="modal fade" id="joinGameModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Join Game</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="joinGameForm">
+                    <div class="mb-3">
+                        <label for="roomCode" class="form-label">Room Code</label>
+                        <input type="text" class="form-control text-uppercase" id="roomCode" maxlength="8" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="playerNameJoin" class="form-label">Your Name</label>
+                        <input type="text" class="form-control" id="playerNameJoin" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="joinGame()">Join</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="errorAlert" class="alert alert-danger alert-dismissible fade show d-none" role="alert">
+    <span id="errorMessage"></span>
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function showError(message) {
+    const errorAlert = document.getElementById('errorAlert');
+    const errorMessage = document.getElementById('errorMessage');
+    errorMessage.textContent = message;
+    errorAlert.classList.remove('d-none');
+}
+
+function startGame() {
+    const playerName = document.getElementById('playerNameStart').value.trim();
+    if (!playerName) {
+        showError('Please enter your name');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('player_name', playerName);
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch('{% url "create_room" %}', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            window.location.href = `/room/${data.room_code}/waiting/?player_id=${data.player_id}`;
+        }
+    })
+    .catch(error => {
+        showError('Failed to create room. Please try again.');
+    });
+}
+
+function joinGame() {
+    const roomCode = document.getElementById('roomCode').value.trim().toUpperCase();
+    const playerName = document.getElementById('playerNameJoin').value.trim();
+    
+    if (!roomCode || !playerName) {
+        showError('Please enter room code and your name');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('room_code', roomCode);
+    formData.append('player_name', playerName);
+    
+    const csrfToken = getCSRFToken();
+    if (!csrfToken) {
+        showError('CSRF token not found. Please refresh the page.');
+        return;
+    }
+    
+    fetch('{% url "join_room" %}', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': csrfToken
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            showError(data.error);
+        } else {
+            window.location.href = `/room/${data.room_code}/waiting/?player_id=${data.player_id}`;
+        }
+    })
+    .catch(error => {
+        showError('Failed to join room. Please try again.');
+    });
+}
+
+</script>
+{% endblock %}

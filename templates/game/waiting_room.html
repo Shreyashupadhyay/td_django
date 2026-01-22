@@ -1,0 +1,236 @@
+{% extends 'base.html' %}
+
+{% block title %}Waiting Room - {{ room.code }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="bi bi-hourglass-split"></i> Waiting Room</h4>
+            </div>
+            <div class="card-body text-center p-5">
+                <h2 class="mb-4">Room Code: <span class="badge bg-primary fs-3">{{ room.code }}</span></h2>
+                
+                <div class="mb-4">
+                    <h5>Players Joined:</h5>
+                    <div id="playersList" class="list-group">
+                        {% for player in players %}
+                        <div class="list-group-item">
+                            <i class="bi bi-person-circle"></i> {{ player.name }}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                
+                <div id="waitingMessage" class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> Waiting for another player to join...
+                </div>
+                
+                <div id="readyMessage" class="alert alert-success d-none">
+                    <i class="bi bi-check-circle"></i> Both players joined! Game starting...
+                </div>
+                
+                {% if room.is_full %}
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle"></i> Both players joined!
+                    <div class="mt-3">
+                        <button class="btn btn-success btn-lg" onclick="startGame()">
+                            <i class="bi bi-play-circle"></i> Start Game
+                        </button>
+                    </div>
+                </div>
+                {% endif %}
+                
+                <div class="mt-4">
+                    <button class="btn btn-secondary" onclick="copyRoomCode()">
+                        <i class="bi bi-clipboard"></i> Copy Room Code
+                    </button>
+                    <button class="btn btn-outline-primary ms-2" onclick="checkRoomStatus()">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const roomCode = '{{ room.code }}';
+const playerId = '{{ player_id }}';
+let socket = null;
+
+let pollInterval = null;
+let wsConnected = false;
+
+function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/room/${roomCode}/`;
+    
+    socket = new WebSocket(wsUrl);
+    
+    socket.onopen = function() {
+        console.log('WebSocket connected');
+        wsConnected = true;
+        socket.send(JSON.stringify({
+            type: 'join_room',
+            player_id: playerId
+        }));
+        // Stop polling if WebSocket is working
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    };
+    
+    socket.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        handleWebSocketMessage(data);
+    };
+    
+    socket.onerror = function(error) {
+        console.error('WebSocket error:', error);
+        wsConnected = false;
+        // Start polling as fallback
+        if (!pollInterval) {
+            startPolling();
+        }
+    };
+    
+    socket.onclose = function() {
+        console.log('WebSocket disconnected');
+        wsConnected = false;
+        // Start polling as fallback
+        if (!pollInterval) {
+            startPolling();
+        }
+        // Try to reconnect after 3 seconds
+        setTimeout(connectWebSocket, 3000);
+    };
+}
+
+function startPolling() {
+    // Poll every 2 seconds to check room status
+    if (pollInterval) return;
+    pollInterval = setInterval(checkRoomStatus, 2000);
+    console.log('Started polling for room status');
+}
+
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
+
+function checkRoomStatus() {
+    // Check room status via API
+    fetch(`/api/room/${roomCode}/status/`)
+        .then(response => response.json())
+        .then(data => {
+            updatePlayersList(data.players);
+            
+            if (data.is_full && !data.game_started) {
+                document.getElementById('waitingMessage').classList.add('d-none');
+                document.getElementById('readyMessage').classList.remove('d-none');
+                // Reload to show start button
+                if (!document.querySelector('.btn-success')) {
+                    location.reload();
+                }
+            } else if (data.game_started) {
+                window.location.href = `/room/${roomCode}/game/?player_id=${playerId}`;
+            }
+        })
+        .catch(error => {
+            console.error('Error checking room status:', error);
+        });
+}
+
+function startGame() {
+    fetch(`/api/room/${roomCode}/start-game/`, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': getCSRFToken(),
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ player_id: playerId }),
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+        } else {
+            window.location.href = `/room/${roomCode}/game/?player_id=${playerId}`;
+        }
+    })
+    .catch(error => {
+        console.error('Error starting game:', error);
+        alert('Failed to start game. Please try again.');
+    });
+}
+
+function handleWebSocketMessage(data) {
+    if (data.type === 'room_state') {
+        updatePlayersList(data.players);
+        
+        if (data.room.is_full) {
+            document.getElementById('waitingMessage').classList.add('d-none');
+            document.getElementById('readyMessage').classList.remove('d-none');
+            
+            // Start game
+            socket.send(JSON.stringify({
+                type: 'start_game'
+            }));
+            
+            // Redirect to game screen after a short delay
+            setTimeout(() => {
+                window.location.href = `/room/${roomCode}/game/?player_id=${playerId}`;
+            }, 2000);
+        }
+    } else if (data.type === 'player_joined') {
+        socket.send(JSON.stringify({
+            type: 'get_state'
+        }));
+    } else if (data.type === 'game_started') {
+        window.location.href = `/room/${roomCode}/game/?player_id=${playerId}`;
+    }
+}
+
+function updatePlayersList(players) {
+    const playersList = document.getElementById('playersList');
+    playersList.innerHTML = '';
+    
+    players.forEach(player => {
+        const item = document.createElement('div');
+        item.className = 'list-group-item';
+        item.innerHTML = `<i class="bi bi-person-circle"></i> ${player.name}`;
+        playersList.appendChild(item);
+    });
+}
+
+function copyRoomCode() {
+    navigator.clipboard.writeText(roomCode).then(() => {
+        alert('Room code copied to clipboard!');
+    });
+}
+
+// Check if room is already full on page load
+{% if room.is_full %}
+document.getElementById('waitingMessage').classList.add('d-none');
+document.getElementById('readyMessage').classList.remove('d-none');
+{% endif %}
+
+// Connect WebSocket on page load
+connectWebSocket();
+
+// Start polling as fallback (will be stopped if WebSocket connects)
+setTimeout(() => {
+    if (!wsConnected && !pollInterval) {
+        startPolling();
+    }
+}, 2000);
+</script>
+{% endblock %}
